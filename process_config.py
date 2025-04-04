@@ -18,6 +18,10 @@ if not os.path.isfile(config_path):
                 'ssid': 'YOUR_WIFI_SSID',
                 'password': 'YOUR_WIFI_PASSWORD',
                 'hostname': 'GPS-ESP32'
+            },
+            'logger': {
+                'server': '192.168.1.100',
+                'port': 8080
             }
         }, f, default_flow_style=False)
     print("Created default config file. Please edit it with your settings.")

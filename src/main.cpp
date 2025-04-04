@@ -8,7 +8,7 @@
 #include <WiFiUdp.h>
 #include <ArduinoOTA.h>
 #include <ArduinoJson.h>
-#include <config.h> // Include the config file for WiFi credentials
+#include "ScreenManager.h"
 
 // include the installed "TFT_eSPI" library by Bodmer to interface with the TFT Display - https://github.com/Bodmer/TFT_eSPI
 #include <TFT_eSPI.h>
@@ -19,14 +19,26 @@
 // Include our GPS parser
 #include "GPSParser.h"
 
+// Include our TCP logger
+#include "TCPLogger.h"
+
+// Include auto-generated config
+#include "config.h"
 
 // WiFi credentials (will be loaded from config)
 String ssid;
 String password;
 String hostname;
 
+// Logger configuration (will be loaded from config)
+String loggerServer;
+uint16_t loggerPort;
+
 // Create a instance of the TFT_eSPI class
 TFT_eSPI tft = TFT_eSPI();
+
+// Create an instance of our TCP logger (will be initialized after loading config)
+TCPLogger* logger = nullptr;
 
 // Set the pius of the xpt2046 touchscreen
 #define XPT2046_IRQ 36  // T_IRQ
@@ -42,6 +54,8 @@ XPT2046_Touchscreen touchscreen(XPT2046_CS, XPT2046_IRQ);
 #define SCREEN_WIDTH 320
 #define SCREEN_HEIGHT 240
 #define FONT_SIZE 2
+
+ScreenManager* screenManager;
 
 // Global Variables
 int posX;     // x position of the touch
@@ -72,16 +86,16 @@ bool otaInProgress = false;
 
 // Function to load configuration
 bool loadConfig() {
-  DynamicJsonDocument doc(CONFIG_JSON_BUFFER_SIZE);
-
+  DynamicJsonDocument doc(1024);
+  
   DeserializationError error = deserializeJson(doc, CONFIG_JSON);
-
+  
   if (error) {
     Serial.print("Failed to parse config JSON: ");
     Serial.println(error.c_str());
     return false;
   }
-
+  
   // Extract WiFi settings
   if (doc.containsKey("wifi")) {
     JsonObject wifi = doc["wifi"];
@@ -92,12 +106,26 @@ bool loadConfig() {
     Serial.println("WiFi configuration not found in config file");
     return false;
   }
-
+  
+  // Extract logger settings
+  if (doc.containsKey("logger")) {
+    JsonObject loggerConfig = doc["logger"];
+    loggerServer = loggerConfig["server"].as<String>();
+    loggerPort = loggerConfig["port"].as<uint16_t>();
+  } else {
+    Serial.println("Logger configuration not found, using defaults");
+    loggerServer = "192.168.1.100";
+    loggerPort = 8080;
+  }
+  
   return true;
 }
 
 void logTouchData(int posX, int posY, int pressure)
 {
+  String logMessage = "Touch: X=" + String(posX) + ", Y=" + String(posY) + ", Pressure=" + String(pressure);
+  logger->logDebug(logMessage);
+  
   Serial.print("X = ");
   Serial.print(posX);
   Serial.print(" | Y = ");
@@ -126,6 +154,12 @@ void updateGPSDisplay()
   
   tft.setTextColor(TFT_MAGENTA, TFT_BLACK);
   tft.drawString("Satellites: " + String(gpsParser.getSatellites()), 10, 160);
+  
+  // Log GPS update
+  String logMessage = "GPS Update: Pos=" + gpsParser.getPositionString() + 
+                     ", Speed=" + String(gpsParser.getSpeed()) + 
+                     ", Sats=" + String(gpsParser.getSatellites());
+  logger->logInfo(logMessage);
 }
 
 void setupOTA() {
@@ -145,18 +179,18 @@ void setupOTA() {
   Serial.print("IP address: ");
   Serial.println(WiFi.localIP());
 
-  // Display WiFi info on screen
-  tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.drawString("WiFi: " + String(ssid), 10, 220);
-  tft.drawString("IP: " + WiFi.localIP().toString(), 180, 220);
+  // Log WiFi connection
+  logger->logInfo("WiFi connected. IP: " + WiFi.localIP().toString());
 
   // Set up mDNS responder
   if (!MDNS.begin(hostname)) {
     Serial.println("Error setting up MDNS responder!");
+    logger->logError("Failed to set up mDNS responder");
   } else {
     Serial.println("mDNS responder started");
     Serial.print("Device name: ");
     Serial.println(hostname);
+    logger->logInfo("mDNS responder started. Device name: " + hostname);
   }
 
   // Configure OTA
@@ -173,6 +207,9 @@ void setupOTA() {
     // Set flag to prevent other operations during update
     otaInProgress = true;
     
+    // Log OTA start
+    logger->logInfo("OTA update starting. Type: " + type);
+    
     // Clear screen and show update message
     tft.fillScreen(TFT_BLACK);
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -187,6 +224,10 @@ void setupOTA() {
     tft.setTextColor(TFT_GREEN, TFT_BLACK);
     tft.drawCentreString("Update Complete!", centerX, centerY, FONT_SIZE);
     tft.drawCentreString("Rebooting...", centerX, centerY + 30, FONT_SIZE);
+    
+    // Log OTA completion
+    logger->logInfo("OTA update completed. Rebooting...");
+    
     Serial.println("\nEnd");
   });
   
@@ -250,7 +291,12 @@ void setup()
       ssid = "DEFAULT_SSID";
       password = "DEFAULT_PASSWORD";
       hostname = "GPS-ESP32";
+      loggerServer = "192.168.1.100";
+      loggerPort = 8080;
     }
+  
+  // Initialize the logger with the loaded configuration
+  logger = new TCPLogger(loggerServer, loggerPort, hostname);
 
   // Start the touchscreen component and init the touchscreen
   touchscreenSPI.begin(XPT2046_CLK, XPT2046_MISO, XPT2046_MOSI, XPT2046_CS);
@@ -268,20 +314,29 @@ void setup()
   // Set the TFT display rotation in landscape mode
   tft.setRotation(1);
 
-  // Clear the screen and display a message
+  // Clear the screen
   tft.fillScreen(TFT_BLACK);
-  tft.setTextColor(TFT_WHITE, TFT_BLACK);
 
   // Set X and Y coordinates for center of display
   centerX = SCREEN_WIDTH / 2;
   centerY = SCREEN_HEIGHT / 2;
 
-  tft.drawCentreString("Hello, Kafkar.com!", centerX, 30, FONT_SIZE);
-  tft.drawCentreString("Marin GPS", centerX, 200, FONT_SIZE);
+  // Initialize the screen manager with all required parameters
+  screenManager = new ScreenManager(&tft, &gpsParser, logger, &hostname);
+  screenManager->begin();
+  
+  // Start the logger
+  logger->begin();
+  logger->logInfo("System starting up");
   
   // Setup OTA after display is initialized
   setupOTA();
 }
+
+String nmeaBuffer = "";
+bool nmeaSentenceComplete = false;
+unsigned long lastNmeaSend = 0;
+const unsigned long NMEA_SEND_INTERVAL = 1000; // Send NMEA data every second
 
 void loop()
 {
@@ -301,13 +356,30 @@ void loop()
     // Process the GPS data with our parser
     gpsParser.processGPSData(gpsData);
     
+    // Collect NMEA data
+    nmeaBuffer += gpsData;
+    
+    // Check for end of NMEA sentence
+    if (gpsData == '\n') {
+      nmeaSentenceComplete = true;
+    }
+    
     // Echo to serial monitor for debugging
     Serial.print(gpsData);
   }
 
-  // Update display if we have new data and enough time has passed
+  // Send NMEA data if we have a complete sentence and it's time to send
+  if (nmeaSentenceComplete && (millis() - lastNmeaSend > NMEA_SEND_INTERVAL)) {
+    if (logger->sendRawNMEA(nmeaBuffer)) {
+      lastNmeaSend = millis();
+    }
+    nmeaBuffer = "";
+    nmeaSentenceComplete = false;
+  }
+
+  // Update screen if we have new data and enough time has passed
   if (gpsParser.isNewDataAvailable() && (millis() - lastDisplayUpdate > DISPLAY_UPDATE_INTERVAL)) {
-    updateGPSDisplay();
+    screenManager->update();  // Update the current screen with new GPS data
     lastDisplayUpdate = millis();
   }
 
@@ -321,7 +393,14 @@ void loop()
     posY = map(p.y, 240, 3800, 1, SCREEN_HEIGHT);
     pressure = p.z;
 
-    logTouchData(posX, posY, pressure);
+    // Handle touch with screen manager
+    if (screenManager->handleTouch(posX, posY)) {
+      // Touch was handled by screen manager (tab switching)
+      logger->logDebug("Tab switched to: " + String(screenManager->getCurrentScreen()));
+    } else {
+      // Touch was not on tab bar, log it for debugging
+      logTouchData(posX, posY, pressure);
+    }
 
     delay(100);
   }
