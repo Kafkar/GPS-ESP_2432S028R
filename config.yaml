@@ -1,0 +1,5 @@
+wifi:
+  ssid: "H369A6B77CF"
+  password: "Spanning!"
+  hostname: "GPS-ESP32"
+

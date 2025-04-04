@@ -7,6 +7,8 @@
 #include <ESPmDNS.h>
 #include <WiFiUdp.h>
 #include <ArduinoOTA.h>
+#include <ArduinoJson.h>
+#include <config.h> // Include the config file for WiFi credentials
 
 // include the installed "TFT_eSPI" library by Bodmer to interface with the TFT Display - https://github.com/Bodmer/TFT_eSPI
 #include <TFT_eSPI.h>
@@ -17,10 +19,11 @@
 // Include our GPS parser
 #include "GPSParser.h"
 
-// WiFi credentials
-const char* ssid = "H369A6B77CF";
-const char* password = "Spanning!";
-const char* hostname = "GPS-ESP32"; // This will be the device name in your network
+
+// WiFi credentials (will be loaded from config)
+String ssid;
+String password;
+String hostname;
 
 // Create a instance of the TFT_eSPI class
 TFT_eSPI tft = TFT_eSPI();
@@ -66,6 +69,32 @@ const unsigned long DISPLAY_UPDATE_INTERVAL = 1000; // Update display every seco
 
 // OTA status flag
 bool otaInProgress = false;
+
+// Function to load configuration
+bool loadConfig() {
+  DynamicJsonDocument doc(CONFIG_JSON_BUFFER_SIZE);
+
+  DeserializationError error = deserializeJson(doc, CONFIG_JSON);
+
+  if (error) {
+    Serial.print("Failed to parse config JSON: ");
+    Serial.println(error.c_str());
+    return false;
+  }
+
+  // Extract WiFi settings
+  if (doc.containsKey("wifi")) {
+    JsonObject wifi = doc["wifi"];
+    ssid = wifi["ssid"].as<String>();
+    password = wifi["password"].as<String>();
+    hostname = wifi["hostname"].as<String>();
+  } else {
+    Serial.println("WiFi configuration not found in config file");
+    return false;
+  }
+
+  return true;
+}
 
 void logTouchData(int posX, int posY, int pressure)
 {
@@ -131,7 +160,7 @@ void setupOTA() {
   }
 
   // Configure OTA
-  ArduinoOTA.setHostname(hostname);
+  ArduinoOTA.setHostname(hostname.c_str());
   
   ArduinoOTA.onStart([]() {
     String type;
@@ -213,7 +242,15 @@ void setupOTA() {
 
 void setup()
 {
-  Serial.begin(115200);
+    Serial.begin(115200);
+  
+    // Load configuration
+    if (!loadConfig()) {
+      Serial.println("Failed to load configuration. Using default values.");
+      ssid = "DEFAULT_SSID";
+      password = "DEFAULT_PASSWORD";
+      hostname = "GPS-ESP32";
+    }
 
   // Start the touchscreen component and init the touchscreen
   touchscreenSPI.begin(XPT2046_CLK, XPT2046_MISO, XPT2046_MOSI, XPT2046_CS);
