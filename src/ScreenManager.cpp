@@ -140,7 +140,7 @@ void ScreenManager::drawTabBar() {
 }
 
 void ScreenManager::drawScrollBar(int offset, int maxOffset, int contentHeight) {
-  int scrollBarHeight = tft->height() - TAB_BAR_HEIGHT;
+  int scrollBarHeight = CONTENT_AREA_HEIGHT; // Only use content area height
   int scrollBarX = tft->width() - SCROLL_BAR_WIDTH;
   
   // Draw scroll bar background
